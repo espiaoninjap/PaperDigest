@@ -9,6 +9,7 @@ import json
 import smtplib
 import random
 import os
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -35,7 +36,7 @@ TARGET_PAPERS   = 10
 
 
 def search_semantic_scholar(query: str, limit: int = 10) -> list[dict]:
-    """Call the Semantic Scholar Graph API and return paper records."""
+    """Call the Semantic Scholar Graph API and return paper records, with retry on 429."""
     params = urllib.parse.urlencode({
         "query": query,
         "limit": limit,
@@ -43,13 +44,26 @@ def search_semantic_scholar(query: str, limit: int = 10) -> list[dict]:
     })
     url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}"
     req = urllib.request.Request(url, headers={"User-Agent": "PaperDigestBot/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data.get("data", [])
-    except Exception as e:
-        print(f"  Warning: query failed ({e})")
-        return []
+
+    for attempt in range(3):  # up to 3 attempts
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read())
+                return data.get("data", [])
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                wait = 12 * (attempt + 1)  # 12s, 24s, 36s
+                print(f"  Rate limited — waiting {wait}s before retry...")
+                time.sleep(wait)
+            else:
+                print(f"  Warning: query failed (HTTP {e.code})")
+                return []
+        except Exception as e:
+            print(f"  Warning: query failed ({e})")
+            return []
+
+    print("  Warning: gave up after 3 attempts (still rate limited)")
+    return []
 
 
 def build_link(paper: dict) -> str:
@@ -75,6 +89,7 @@ def collect_papers() -> list[dict]:
             if pid and pid not in seen_ids:
                 seen_ids.add(pid)
                 all_papers.append(p)
+        time.sleep(5)  # 5-second pause between queries to respect rate limits
 
     print(f"Total unique papers found: {len(all_papers)}")
 
